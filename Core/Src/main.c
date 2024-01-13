@@ -41,23 +41,24 @@ typedef enum
 	DISPLAY_HUMI,
 } DisplayMode_t;
 
-//typedef enum
-//{
-//	TASK_READ_DATA,
-//	TASK_CONTROL_LED,
-//	TASK_DISPLAY,
-//	TASK_SEND_TO_COM,
-//} TaskIndex_t;
+typedef enum
+{
+	TASK_READ_DATA,
+	TASK_DISPLAY,
+	TASK_SEND_TO_COM,
+	TASK_CONTROL_RGB,
+	TASK_HANDLE_INTERRUPT
+} TaskIndex_t;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define MAX_RX_LEN 13
-#define RGB_COMMAND_LEN	12
+#define MAX_RX_LEN 			13
+#define RGB_COMMAND_LEN		12
 #define DISPLAY_COMMAND_LEN 11
-#define TIME_COMMAND_LEN 8
+#define TIME_COMMAND_LEN 	8
 
 /* USER CODE END PD */
 
@@ -69,6 +70,7 @@ typedef enum
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
@@ -78,18 +80,20 @@ UART_HandleTypeDef huart1;
 RGB_t rgb;
 DHT11_Sensor dht;
 DHT11_Status dhtStatus;
-TaskQueue_t queue;
+
 LCD_I2C_Name lcd;
 
 uint8_t red = 0, green = 0, blue = 0;
+const uint32_t rgbPeriod = 500;
+
 uint32_t P, t0;
 
 uint8_t rxData[MAX_RX_LEN];
 uint8_t rxDataIndex = 0;
 
 DisplayMode_t DisplayMode = DISPLAY_TEMP_HUMI;
-//TaskIndex_t TaskIndex;
-pTaskFunction currentTask;
+
+volatile uint8_t isInterrupt = 0;
 
 /* USER CODE END PV */
 
@@ -100,6 +104,7 @@ static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 void vTask_HandleInterrupt();
 void vTask_ReadData();
@@ -112,8 +117,7 @@ void vTask_SendToCom();
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-pTaskFunction TaskArray[] = {vTask_ReadData, vTask_Display, vTask_SendToCom, vTask_ControlRgb, vTask_ControlRgb};
-uint32_t TaskTime[] = {1000, 100, 100, 350, 350};
+pTaskFunction TaskArray[] = {vTask_ReadData, vTask_Display, vTask_SendToCom, vTask_ControlRgb, vTask_HandleInterrupt};
 
 int __io_putchar(int ch)
 {
@@ -125,6 +129,9 @@ int __io_putchar(int ch)
 void vTask_HandleInterrupt()
 {
 	NVIC_DisableIRQ(USART1_IRQn);
+
+	printf("vTask_HandleInterrupt IN: %ld\r\n", uwTick);
+
 	const uint8_t* numPart;
 	uint8_t buffer[5];
 	printf("\n");
@@ -181,9 +188,17 @@ void vTask_HandleInterrupt()
 				numPart = rxData + 4;
 				strncpy(buffer, (const char*)numPart, 4);
 				buffer[4] = '\0'; // Null-terminate the buffer
-				TaskTime[0] = (uint32_t)atoi((const char*)buffer);
-				printf("Change DHT11 Period to %d\r\n\n", TaskTime[0]);
-
+				uint32_t old_P = P;
+				P = (uint32_t)atoi((const char*)buffer);
+				if (P >= 1500 && P < 10000)
+				{
+					printf("Change DHT11 Period from %d to %d\r\n\n", old_P, P);
+				}
+				else
+				{
+					printf("The new Period is invalid! DHT11 Period stays the same: %d\r\n\n", old_P);
+					P = old_P;
+				}
 			}
 			else
 			{
@@ -194,6 +209,9 @@ void vTask_HandleInterrupt()
 			printf("Error Command Syntax\r\n\n");
 			break;
 	}
+
+	t0 = uwTick;
+	printf("vTask_HandleInterrupt OUT: %ld\r\n\n", uwTick);
 
 	NVIC_EnableIRQ(USART1_IRQn);
 
@@ -206,7 +224,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		if (rxData[rxDataIndex] == '@')
 		{
 			rxData[rxDataIndex] = '\0';
-			Queue_PushFront(&queue, vTask_HandleInterrupt);
+			isInterrupt = 1;
 			rxDataIndex = 0;
 		}
 		else
@@ -237,8 +255,6 @@ void vTask_ReadData()
 			printf("Get Data from DHT11 successfully\r\n");
 			break;
 	}
-
-	Queue_PushRear(&queue, vTask_ReadData);
 
 	printf("vTask_ReadData OUT: %ld\r\n\n", uwTick);
 }
@@ -275,7 +291,6 @@ void vTask_Display()
   	  	}
   	}
 
-  	Queue_PushRear(&queue, vTask_Display);
   	printf("vTask_Display OUT: %ld\r\n\n", uwTick);
 }
 
@@ -285,7 +300,6 @@ void vTask_ControlRgb()
 
 	RGB_SetValue(&rgb, red++, green++, blue++);
 
-	Queue_PushRear(&queue, vTask_ControlRgb);
 	printf("vTask_ControlRgb OUT: %ld\r\n\n", uwTick);
 }
 
@@ -310,7 +324,6 @@ void vTask_SendToCom()
 		}
 	}
 
-	Queue_PushRear(&queue, vTask_SendToCom);
 	printf("vTask_SendToCom OUT: %ld\r\n\n", uwTick);
 }
 /* USER CODE END 0 */
@@ -347,27 +360,23 @@ int main(void)
   MX_TIM4_Init();
   MX_USART1_UART_Init();
   MX_I2C2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
-  P = 1000;
+  P = 2000;
   t0 = uwTick;
-  uint32_t idx;
+  uint8_t idx;
 
   printf("Start\r\n\n");
 
   DHT11_Init(&dht, DHT_GPIO_Port, DHT_Pin, &htim4);
   RGB_Init(&rgb, &htim2, TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3);
-  Queue_Init(&queue, MAX_TASKS);
   LCD_Init(&lcd, &hi2c2, LDC_DEFAULT_ADDRESS, 20, 4);
+
   LCD_SetCursor(&lcd, 0, 0);
   LCD_WriteString(&lcd, "Hello");
 
   HAL_UART_Receive_IT(&huart1, (uint8_t*)&rxData[rxDataIndex],  1);
-
-  for (idx = 0; idx < sizeof(TaskArray)/sizeof(TaskArray[0]); idx ++)
-  {
-	  Queue_PushRear(&queue, TaskArray[idx]);
-  }
 
   /* USER CODE END 2 */
 
@@ -378,18 +387,23 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  for (idx = 0; idx < sizeof(TaskArray)/sizeof(TaskArray[0]); idx++)
+	  if (isInterrupt)
 	  {
-		  if ((uwTick % TaskTime[idx] == t0 && queue.Task[queue.Front] == TaskArray[idx]))
+		  TaskArray[TASK_HANDLE_INTERRUPT]();
+		  isInterrupt = 0;
+	  }
+	  else
+	  {
+		  if ((uwTick - t0) % P == 0)
 		  {
-			  currentTask = Queue_Pop(&queue);
-			  currentTask();
+			  for (idx = 0; idx < 4; idx++)
+			  {
+				  TaskArray[idx]();
+			  }
 		  }
-		  else if (queue.Task[queue.Front] == vTask_HandleInterrupt)
+		  else if ( ((uwTick - t0) % rgbPeriod == 0) && ((uwTick - t0) % P != 0))
 		  {
-			  currentTask = Queue_Pop(&queue);
-			  currentTask();
-			  break;
+			  TaskArray[TASK_CONTROL_RGB]();
 		  }
 	  }
   }
@@ -466,6 +480,52 @@ static void MX_I2C2_Init(void)
   /* USER CODE BEGIN I2C2_Init 2 */
 
   /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
 
 }
 
