@@ -251,8 +251,8 @@ void vTask_Display()
 
   	if (dhtStatus == DHT11_OK)
   	{
-  	  	sprintf(temp, "Temperature: %.2f", dht.Temp);
-  	  	sprintf(humi, "Humidity: %.2f", dht.Humi);
+  	  	sprintf(temp, "Temp: %.2f", dht.Temp);
+  	  	sprintf(humi, "Humi: %.2f", dht.Humi);
 
   	  	LCD_Clear(&lcd);
 
@@ -359,6 +359,8 @@ int main(void)
   RGB_Init(&rgb, &htim2, TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3);
   Queue_Init(&queue, MAX_TASKS);
   LCD_Init(&lcd, &hi2c2, LDC_DEFAULT_ADDRESS, 20, 4);
+  LCD_SetCursor(&lcd, 0, 0);
+  LCD_WriteString(&lcd, "Hello");
 
   HAL_UART_Receive_IT(&huart1, (uint8_t*)&rxData[rxDataIndex],  1);
 
