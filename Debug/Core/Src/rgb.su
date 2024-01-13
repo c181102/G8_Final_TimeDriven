@@ -1,0 +1,3 @@
+../Core/Src/rgb.c:21:13:assign_value	16	static
+../Core/Src/rgb.c:72:6:RGB_Init	24	static
+../Core/Src/rgb.c:90:6:RGB_SetValue	16	static
